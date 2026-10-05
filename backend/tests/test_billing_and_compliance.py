@@ -10,7 +10,7 @@ def test_otc_billing_atomic_stock_deduction(client, owner_headers):
     # 1. Fetch Dolo 650 (OTC drug from seed)
     meds = client.get("/api/v1/medicines/?q=Dolo 650", headers=owner_headers).json()
     assert len(meds) > 0
-    dolo = meds[0]
+    dolo = next((m for m in meds if m.get("selling_price", 0) > 0), meds[0])
 
     # 2. Get available batch
     batches = client.get(f"/api/v1/medicines/{dolo['id']}/batches", headers=owner_headers).json()

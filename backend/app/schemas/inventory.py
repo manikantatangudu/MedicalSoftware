@@ -9,8 +9,8 @@ class BatchBase(BaseModel):
     batch_number: str
     mfg_date: Optional[date] = None
     expiry_date: date
-    quantity_received: int
-    quantity_remaining: int
+    quantity_received: float
+    quantity_remaining: float
 
 class BatchCreate(BatchBase):
     pass
@@ -28,7 +28,7 @@ class StockAdjustmentCreate(BaseModel):
     medicine_id: str
     branch_id: Optional[str] = None
     batch_id: Optional[str] = None
-    quantity_change: int
+    quantity_change: float
     reason: StockAdjustmentReason
     notes: Optional[str] = None
 
@@ -38,7 +38,7 @@ class StockAdjustmentResponse(BaseModel):
     branch_id: str
     medicine_id: str
     batch_id: Optional[str]
-    quantity_change: int
+    quantity_change: float
     reason: StockAdjustmentReason
     notes: Optional[str]
     created_at: datetime

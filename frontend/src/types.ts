@@ -14,22 +14,40 @@ export interface UserProfile {
 
 export interface Medicine {
   id: string;
-  generic_name: string;
+  code?: string;
   brand_name: string;
+  generic_name: string;
+  company_name?: string;
+  manufacturer_id?: string;
+  product_type?: string;
   drug_type?: string;
   composition?: string;
   strength?: string;
-  pack_size?: string;
-  category?: string;
+  packing?: string;
+  conversion: number;
+  rack_no?: string;
   hsn_code?: string;
   gst_rate: number;
+  purchase_tax_rate?: number;
+  show_gst_in_purchase?: boolean;
   mrp: number;
   purchase_price: number;
   selling_price: number;
   schedule_type: DrugSchedule;
+  schedule_code?: string;
+  max_discount_limit?: number;
+  sales_discount?: number;
+  add_points_percent?: number;
+  allow_negative_stock?: boolean;
+  is_narcotic?: boolean;
   reorder_level: number;
+  reorder_qty?: number;
   unit: string;
+  pack_size?: string;
+  category?: string;
   barcode?: string;
+  launched_on?: string;
+  comments?: string;
 }
 
 export interface Batch {
@@ -53,10 +71,23 @@ export interface Doctor {
 
 export interface Customer {
   id: string;
+  code?: string;
   name: string;
   phone?: string;
+  mobile_2?: string;
+  email?: string;
   address?: string;
+  locality?: string;
+  city?: string;
+  pincode?: string;
+  doctor_id?: string;
+  doctor_name?: string;
+  category?: string;
+  gstin?: string;
   credit_balance: number;
+  discount_percent?: number;
+  discount_ceiling?: number;
+  billing_on?: string;
 }
 
 export interface Supplier {
@@ -67,6 +98,20 @@ export interface Supplier {
   gstin?: string;
   outstanding_balance: number;
   created_at: string;
+}
+
+export interface Manufacturer {
+  id: string;
+  code?: string;
+  name: string;
+  license_no?: string;
+  contact?: string;
+}
+
+export interface Molecule {
+  name: string;
+  code: string;
+  category: string;
 }
 
 export interface PurchaseOrder {
@@ -93,6 +138,8 @@ export interface CartItem {
   medicine: Medicine;
   batch: Batch;
   quantity: number;
+  strips: number;
+  tablets: number;
   unit_price: number;
   tax_rate: number;
   line_total: number;

@@ -6,7 +6,7 @@ from app.models.billing import PaymentMode, BillStatus
 class BillItemCreate(BaseModel):
     medicine_id: str
     batch_id: str
-    quantity: int
+    quantity: float
     unit_price: float
     tax_rate: float = 12.0
 
@@ -14,7 +14,7 @@ class BillItemResponse(BaseModel):
     id: str
     medicine_id: str
     batch_id: str
-    quantity: int
+    quantity: float
     unit_price: float
     tax_rate: float
     line_total: float
@@ -33,7 +33,7 @@ class ScheduleEntryCreate(BaseModel):
     patient_name: str
     patient_phone: Optional[str] = None
     patient_address: Optional[str] = None
-    quantity: int
+    quantity: float
 
 class BillCreateRequest(BaseModel):
     branch_id: Optional[str] = None

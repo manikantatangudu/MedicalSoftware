@@ -55,7 +55,7 @@ class BillItem(Base):
     bill_id = Column(String(36), ForeignKey("bills.id", ondelete="CASCADE"), nullable=False, index=True)
     medicine_id = Column(String(36), ForeignKey("medicines.id", ondelete="RESTRICT"), nullable=False)
     batch_id = Column(String(36), ForeignKey("batches.id", ondelete="RESTRICT"), nullable=False)
-    quantity = Column(Integer, nullable=False)
+    quantity = Column(Float, nullable=False)
     unit_price = Column(Float, nullable=False)
     tax_rate = Column(Float, default=12.0)
     line_total = Column(Float, nullable=False)
@@ -92,7 +92,7 @@ class ScheduleRegisterEntry(Base):
     patient_name = Column(String(150), nullable=False)
     patient_phone = Column(String(50), nullable=True)
     patient_address = Column(Text, nullable=True)
-    quantity = Column(Integer, nullable=False)
+    quantity = Column(Float, nullable=False)
     dispensed_date = Column(Date, default=lambda: datetime.now(timezone.utc).date())
 
     bill = relationship("Bill", back_populates="schedule_entries")

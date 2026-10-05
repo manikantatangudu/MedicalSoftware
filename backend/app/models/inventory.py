@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text, Enum as SQLEnum, Date
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Float, Text, Enum as SQLEnum, Date
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -29,8 +29,8 @@ class Batch(Base):
     batch_number = Column(String(100), nullable=False, index=True)
     mfg_date = Column(Date, nullable=True)
     expiry_date = Column(Date, nullable=False, index=True)
-    quantity_received = Column(Integer, default=0)
-    quantity_remaining = Column(Integer, default=0, index=True)
+    quantity_received = Column(Float, default=0.0)
+    quantity_remaining = Column(Float, default=0.0, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     medicine = relationship("Medicine", back_populates="batches")
@@ -44,7 +44,7 @@ class StockAdjustment(Base):
     branch_id = Column(String(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
     medicine_id = Column(String(36), ForeignKey("medicines.id", ondelete="CASCADE"), nullable=False)
     batch_id = Column(String(36), ForeignKey("batches.id", ondelete="SET NULL"), nullable=True)
-    quantity_change = Column(Integer, nullable=False)  # Positive for additions, negative for write-offs
+    quantity_change = Column(Float, nullable=False)  # Positive for additions, negative for write-offs
     reason = Column(SQLEnum(StockAdjustmentReason), nullable=False)
     notes = Column(Text, nullable=True)
     adjusted_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

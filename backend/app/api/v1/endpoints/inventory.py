@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import date, timedelta
 from app.core.database import get_db
 from app.models.user import User
+from app.models.tenant import Branch
 from app.models.master import Medicine
 from app.models.inventory import Batch, StockAdjustment
 from app.models.audit import AuditLog
@@ -16,7 +17,7 @@ router = APIRouter()
 @router.get("/batches", response_model=List[BatchResponse])
 def list_batches(
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50000,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -45,7 +46,11 @@ def create_batch(
 
     branch_id = batch_in.branch_id or current_user.branch_id
     if not branch_id:
-        raise HTTPException(status_code=400, detail="Branch ID required")
+        first_branch = db.query(Branch).filter(Branch.tenant_id == current_user.tenant_id).first()
+        if first_branch:
+            branch_id = first_branch.id
+        else:
+            raise HTTPException(status_code=400, detail="Branch ID required")
 
     batch = Batch(
         tenant_id=current_user.tenant_id,

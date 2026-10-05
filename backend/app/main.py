@@ -2,14 +2,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
-from app.core.database import engine, Base
-import app.models  # Ensures all 18 models are registered with Base.metadata
+from app.core.database import engine, Base, run_auto_migrations
+import app.models  # Ensures all models are registered with Base.metadata
 from app.api.v1.router import api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Automatically initialize database tables on startup (works with SQLite and Postgres)
     Base.metadata.create_all(bind=engine)
+    run_auto_migrations()
     yield
 
 app = FastAPI(

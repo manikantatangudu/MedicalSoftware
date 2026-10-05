@@ -18,7 +18,9 @@ import {
   DollarSign,
   Download,
   BarChart3,
-  Filter
+  Filter,
+  Database,
+  PackagePlus
 } from "lucide-react";
 import { api } from "./api";
 import type {
@@ -28,9 +30,13 @@ import type {
   Doctor,
   Customer,
   Supplier,
+  Manufacturer,
   PurchaseOrder,
   GoodsReceiptNote
 } from "./types";
+import { ProductMasterModal } from "./components/ProductMasterModal";
+import { CustomerMasterModal } from "./components/CustomerMasterModal";
+import { MasterDatabaseView } from "./components/MasterDatabaseView";
 
 export default function App() {
   const [user, setUser] = useState<UserProfile | null>(() => {
@@ -45,7 +51,14 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
 
   // Navigation tab
-  const [activeTab, setActiveTab] = useState<"billing" | "inventory" | "purchases" | "medicines" | "reports">("billing");
+  const [activeTab, setActiveTab] = useState<"billing" | "inventory" | "purchases" | "master" | "reports">("billing");
+
+  // Master Catalogs State (GenSoft ERP)
+  const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
+  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
+  const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [showProductMasterModal, setShowProductMasterModal] = useState(false);
+  const [showCustomerMasterModal, setShowCustomerMasterModal] = useState(false);
 
   // POS State
   const [medicines, setMedicines] = useState<Medicine[]>([]);
@@ -162,16 +175,18 @@ export default function App() {
   async function loadData() {
     if (!user) return;
     try {
-      const [medsRes, docsRes, custsRes, supsRes] = await Promise.all([
+      const [medsRes, docsRes, custsRes, supsRes, mfgsRes] = await Promise.all([
         api.getMedicines(searchQuery),
         api.getDoctors(),
         api.getCustomers(),
-        api.getSuppliers()
+        api.getSuppliers(),
+        api.getManufacturers()
       ]);
       setMedicines(medsRes);
       setDoctors(docsRes);
       setCustomers(custsRes);
       setSuppliers(supsRes);
+      setManufacturers(mfgsRes);
 
       if (docsRes.length > 0 && !selectedDoctorId) {
         setSelectedDoctorId(docsRes[0].id);
@@ -262,38 +277,60 @@ export default function App() {
     }
   }, [user, searchQuery]);
 
-  // Cart operations
-  async function addToCart(med: Medicine) {
+  function openAddStockForMed(med: Medicine) {
+    const nextYear = new Date();
+    nextYear.setFullYear(nextYear.getFullYear() + 2);
+    setNewBatchData({
+      medicine_id: med.id,
+      batch_number: `B-${(med.code || med.brand_name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3)).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`,
+      expiry_date: nextYear.toISOString().split("T")[0],
+      quantity_received: 50,
+      quantity_remaining: 50
+    });
+    setShowAddBatchModal(true);
+  }
+
+  // Cart operations (supporting both Strip Count & Loose Tablet / Number Count)
+  async function addToCart(med: Medicine, initialStrips = 1, initialTablets = 0) {
     try {
       const availableBatches = await api.getMedicineBatches(med.id);
       if (!availableBatches || availableBatches.length === 0) {
-        alert(`No stock available for ${med.brand_name}!`);
+        if (confirm(`No stock batches found for "${med.brand_name}"!\n\nWould you like to add an opening stock batch for this medicine right now?`)) {
+          openAddStockForMed(med);
+        }
         return;
       }
 
       const existingIndex = cart.findIndex((item) => item.medicine.id === med.id);
+      const conv = med.conversion && med.conversion > 0 ? med.conversion : 10;
+
       if (existingIndex >= 0) {
         const item = cart[existingIndex];
-        if (item.quantity + 1 > item.batch.quantity_remaining) {
-          alert(`Cannot exceed available batch stock (${item.batch.quantity_remaining})!`);
-          return;
-        }
-        const updated = [...cart];
-        updated[existingIndex].quantity += 1;
-        const lineSubtotal = updated[existingIndex].quantity * item.unit_price;
-        const lineTax = lineSubtotal * (item.tax_rate / 100);
-        updated[existingIndex].line_total = parseFloat((lineSubtotal + lineTax).toFixed(2));
-        setCart(updated);
+        const newStrips = (item.strips !== undefined ? item.strips : Math.floor(item.quantity)) + initialStrips;
+        const newTabs = (item.tablets !== undefined ? item.tablets : Math.round((item.quantity - Math.floor(item.quantity)) * conv)) + initialTablets;
+        updateCartUnits(existingIndex, newStrips, newTabs);
       } else {
         const bestBatch = availableBatches[0];
-        const lineSubtotal = 1 * med.selling_price;
-        const lineTax = lineSubtotal * (med.gst_rate / 100);
+        const totalTablets = (initialStrips * conv) + initialTablets;
+        const maxAvailableTablets = Math.round(bestBatch.quantity_remaining * conv);
+
+        if (totalTablets > maxAvailableTablets) {
+          alert(`Cannot exceed available batch stock (${bestBatch.quantity_remaining} Strips = ${maxAvailableTablets} Tablets)!`);
+          return;
+        }
+
+        const totalStrips = totalTablets / conv;
+        const pricePerTab = (med.selling_price || 0) / conv;
+        const lineSubtotal = (initialStrips * (med.selling_price || 0)) + (initialTablets * pricePerTab);
+        const lineTax = lineSubtotal * ((med.gst_rate || 0) / 100);
         const newItem: CartItem = {
           medicine: med,
           batch: bestBatch,
-          quantity: 1,
-          unit_price: med.selling_price,
-          tax_rate: med.gst_rate,
+          quantity: parseFloat(totalStrips.toFixed(4)),
+          strips: initialStrips,
+          tablets: initialTablets,
+          unit_price: med.selling_price || 0,
+          tax_rate: med.gst_rate || 0,
           line_total: parseFloat((lineSubtotal + lineTax).toFixed(2))
         };
         setCart([...cart, newItem]);
@@ -303,19 +340,34 @@ export default function App() {
     }
   }
 
-  function updateQuantity(index: number, newQty: number) {
-    if (newQty <= 0) {
+  function updateCartUnits(index: number, newStrips: number, newTabs: number) {
+    const item = cart[index];
+    const conv = item.medicine.conversion && item.medicine.conversion > 0 ? item.medicine.conversion : 10;
+
+    let s = Math.max(0, newStrips);
+    let t = Math.max(0, newTabs);
+
+    const totalTablets = (s * conv) + t;
+    if (totalTablets <= 0) {
       removeFromCart(index);
       return;
     }
-    const item = cart[index];
-    if (newQty > item.batch.quantity_remaining) {
-      alert(`Only ${item.batch.quantity_remaining} units available in Batch ${item.batch.batch_number}!`);
+
+    const totalStrips = totalTablets / conv;
+    const maxAvailableTablets = Math.round(item.batch.quantity_remaining * conv);
+
+    if (totalTablets > maxAvailableTablets) {
+      alert(`Cannot exceed available batch stock! Only ${item.batch.quantity_remaining} Strips (${maxAvailableTablets} Tablets) available in Batch ${item.batch.batch_number}.`);
       return;
     }
+
     const updated = [...cart];
-    updated[index].quantity = newQty;
-    const lineSubtotal = newQty * item.unit_price;
+    updated[index].strips = s;
+    updated[index].tablets = t;
+    updated[index].quantity = parseFloat(totalStrips.toFixed(4));
+
+    const pricePerTab = item.unit_price / conv;
+    const lineSubtotal = (s * item.unit_price) + (t * pricePerTab);
     const lineTax = lineSubtotal * (item.tax_rate / 100);
     updated[index].line_total = parseFloat((lineSubtotal + lineTax).toFixed(2));
     setCart(updated);
@@ -396,6 +448,52 @@ export default function App() {
       loadInventoryData();
     } catch (err: any) {
       alert("Billing Error: " + err.message);
+    }
+  }
+
+  function handleProductSaved(savedMed: Medicine) {
+    setMedicines((prev) => {
+      const idx = prev.findIndex((m) => m.id === savedMed.id);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = savedMed;
+        return copy;
+      }
+      return [savedMed, ...prev];
+    });
+    setEditingMedicine(null);
+  }
+
+  async function handleDeleteMedicine(medId: string) {
+    if (!confirm("Are you sure you want to deactivate this medicine?")) return;
+    try {
+      await api.deleteMedicine(medId);
+      setMedicines((prev) => prev.filter((m) => m.id !== medId));
+    } catch (err: any) {
+      alert("Failed to delete medicine: " + err.message);
+    }
+  }
+
+  function handleCustomerSaved(savedCust: Customer) {
+    setCustomers((prev) => {
+      const idx = prev.findIndex((c) => c.id === savedCust.id);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = savedCust;
+        return copy;
+      }
+      return [savedCust, ...prev];
+    });
+    setEditingCustomer(null);
+  }
+
+  async function handleDeleteCustomer(custId: string) {
+    if (!confirm("Are you sure you want to delete this customer?")) return;
+    try {
+      await api.deleteCustomer(custId);
+      setCustomers((prev) => prev.filter((c) => c.id !== custId));
+    } catch (err: any) {
+      alert("Failed to delete customer: " + err.message);
     }
   }
 
@@ -594,15 +692,17 @@ export default function App() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold text-slate-900 leading-none">{user.store_name}</h1>
-                <span className="text-[11px] bg-slate-100 text-slate-600 font-medium px-2 py-0.5 rounded border border-slate-200">
-                  DL: 2026-KA-987654
+                <h1 className="text-lg font-bold text-slate-900 leading-none">
+                  {user.store_name === "City Care Pharmacy" ? "SRI BHAVANI MEDICAL & GENERAL STORES" : user.store_name}
+                </h1>
+                <span className="text-[11px] bg-amber-50 text-amber-800 font-semibold px-2 py-0.5 rounded border border-amber-200">
+                  DL: 2026-AP-535501
                 </span>
-                <span className="text-[11px] bg-emerald-50 text-emerald-700 font-medium px-2 py-0.5 rounded border border-emerald-200">
-                  GST: 29ABCDE1234F1Z5
+                <span className="text-[11px] bg-emerald-50 text-emerald-700 font-semibold px-2 py-0.5 rounded border border-emerald-200">
+                  PARVATHIPURAM
                 </span>
               </div>
-              <p className="text-xs text-slate-500 mt-1">Counter 1 • Cloud POS & Inventory</p>
+              <p className="text-xs text-slate-500 mt-1">Counter 1 • Cloud POS & GenSoft Master ERP</p>
             </div>
           </div>
 
@@ -676,14 +776,14 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setActiveTab("medicines")}
+            onClick={() => setActiveTab("master")}
             className={`py-2.5 flex items-center gap-2 border-b-2 transition cursor-pointer shrink-0 ${
-              activeTab === "medicines"
-                ? "border-emerald-600 text-emerald-700"
+              activeTab === "master"
+                ? "border-red-600 text-red-700 font-bold"
                 : "border-transparent text-slate-500 hover:text-slate-900"
             }`}
           >
-            <Pill className="w-4 h-4" /> Medicines Master
+            <Database className="w-4 h-4 text-red-600" /> Master Database (GenSoft ERP)
           </button>
 
           <button
@@ -723,6 +823,9 @@ export default function App() {
                 {medicines.map((med) => {
                   const isH1 = med.schedule_type === "SCHEDULE_H1" || med.schedule_type === "SCHEDULE_X";
                   const isH = med.schedule_type === "SCHEDULE_H";
+                  const medBatches = batches.filter((b) => b.medicine_id === med.id);
+                  const totalStock = medBatches.reduce((sum, b) => sum + (b.quantity_remaining || 0), 0);
+                  const isOutOfStock = totalStock <= 0;
 
                   return (
                     <div
@@ -730,7 +833,12 @@ export default function App() {
                       className="p-3 border border-slate-200 rounded-xl hover:border-emerald-400 hover:shadow-md transition flex items-center justify-between bg-slate-50/50"
                     >
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {med.code && (
+                            <span className="font-mono text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">
+                              {med.code}
+                            </span>
+                          )}
                           <h3 className="font-bold text-slate-900 text-sm">{med.brand_name}</h3>
                           <span
                             className={`text-[10px] font-bold px-2 py-0.5 rounded ${
@@ -741,11 +849,25 @@ export default function App() {
                                 : "bg-emerald-100 text-emerald-800 border border-emerald-300"
                             }`}
                           >
-                            {med.schedule_type}
+                            {med.schedule_code || med.schedule_type}
                           </span>
-                          <span className="text-[11px] text-slate-500 bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                            {med.pack_size}
+                          <span className="text-[11px] text-slate-600 bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono">
+                            {med.packing || med.pack_size || "10'S"} ({med.conversion || 10} tabs)
                           </span>
+                          {med.rack_no && (
+                            <span className="text-[10px] font-bold font-mono text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded">
+                              Rack: {med.rack_no}
+                            </span>
+                          )}
+                          {isOutOfStock ? (
+                            <span className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                              Out of Stock
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold font-mono text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                              Stock: {totalStock}
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-600 mt-0.5">
                           <span className="font-medium text-slate-500">Salt:</span> {med.composition || med.generic_name}
@@ -755,18 +877,60 @@ export default function App() {
                             MRP: <strong className="text-slate-800">₹{med.mrp}</strong>
                           </span>
                           <span>
-                            Rate: <strong className="text-emerald-700">₹{med.selling_price}</strong>
+                            Rate: <strong className="text-emerald-700">₹{med.selling_price}</strong>/strip
+                            <span className="text-[10px] text-blue-700 font-bold ml-1">
+                              (₹{((med.selling_price || 0) / (med.conversion || 10)).toFixed(2)}/tab)
+                            </span>
                           </span>
                           <span>GST: {med.gst_rate}%</span>
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => addToCart(med)}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 shadow-sm transition cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Add
-                      </button>
+                      {isOutOfStock ? (
+                        <button
+                          type="button"
+                          onClick={() => openAddStockForMed(med)}
+                          className="bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm transition cursor-pointer"
+                          title="Add opening stock batch for this medicine"
+                        >
+                          <PackagePlus className="w-3.5 h-3.5" /> + Add Stock
+                        </button>
+                      ) : (med.conversion || 10) > 1 ? (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => addToCart(med, 1, 0)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                            title="Add 1 Full Strip to bill"
+                          >
+                            <Plus className="w-3 h-3" /> Strip
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => addToCart(med, 0, 5)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                            title="Add 5 Loose Tablets to bill"
+                          >
+                            <Pill className="w-3 h-3" /> 5 Tabs
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => addToCart(med, 0, 1)}
+                            className="bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 px-2 py-1.5 rounded-lg text-xs font-bold shadow-xs transition cursor-pointer"
+                            title="Add 1 Loose Tablet to bill"
+                          >
+                            +1 Tab
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => addToCart(med, 1, 0)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm transition cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Add
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -780,119 +944,331 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right: POS Checkout Cart */}
-            <div className="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col h-[calc(100vh-140px)]">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+            {/* Right: POS Checkout Cart - GUARANTEED SCROLLABLE & ALWAYS VISIBLE */}
+            <div className="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col h-[calc(100vh-140px)] overflow-y-auto">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200 shrink-0">
                 <h2 className="font-bold text-slate-900 flex items-center gap-2 text-base">
                   <ShoppingCart className="w-5 h-5 text-emerald-600" /> Current Bill
                 </h2>
-                <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2 py-0.5 rounded">
-                  {cart.length} Item{cart.length !== 1 ? "s" : ""}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">
+                    {cart.length} Item{cart.length !== 1 ? "s" : ""}
+                  </span>
+                  {cart.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCart([])}
+                      className="text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer underline"
+                    >
+                      Clear Bill
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Customer Selector */}
-              <div className="mt-2.5 flex items-center gap-2 text-xs">
+              <div className="mt-2.5 flex items-center gap-2 text-xs shrink-0">
                 <span className="text-slate-500 font-semibold shrink-0">Customer:</span>
                 <select
                   value={selectedCustomerId}
-                  onChange={(e) => setSelectedCustomerId(e.target.value)}
+                  onChange={(e) => {
+                    const cid = e.target.value;
+                    setSelectedCustomerId(cid);
+                    if (cid) {
+                      const c = customers.find((cust) => cust.id === cid);
+                      if (c) {
+                        setPatientName(c.name);
+                        setPatientPhone(c.phone || "");
+                        setPatientAddress(c.locality ? `${c.locality}, ${c.city || "PARVATHIPURAM"}` : (c.city || "PARVATHIPURAM"));
+                        if (c.discount_percent && c.discount_percent > 0) {
+                          const autoDisc = (subtotal * c.discount_percent) / 100;
+                          setDiscountAmount(parseFloat(autoDisc.toFixed(2)));
+                        }
+                      }
+                    } else {
+                      setPatientName("");
+                      setPatientPhone("");
+                      setPatientAddress("");
+                      setDiscountAmount(0);
+                    }
+                  }}
                   className="flex-1 px-2.5 py-1 bg-slate-50 border border-slate-300 rounded-lg text-xs outline-none focus:ring-1 focus:ring-emerald-500"
                 >
                   <option value="">Walk-in Retail Customer</option>
                   {customers.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} {c.phone ? `(${c.phone})` : ""}
+                      {c.name} {c.code ? `[Code: ${c.code}]` : ""} {c.phone ? `(${c.phone})` : ""} - {c.locality || c.city || "PARVATHIPURAM"}
                     </option>
                   ))}
                 </select>
               </div>
 
-              {/* Regulatory Warnings */}
-              {hasScheduleH && (
-                <div className="mt-3 p-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-900 flex items-start gap-2">
-                  <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="block font-semibold">Regulatory Dispensing Check</strong>
-                    Schedule H/H1 drugs detected. Prescribing doctor verification required.
+              {selectedCustomerId && (() => {
+                const c = customers.find((cust) => cust.id === selectedCustomerId);
+                if (!c) return null;
+                return (
+                  <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded-lg text-xs flex justify-between items-center text-blue-900 shrink-0">
+                    <div>
+                      <span className="font-bold">{c.name}</span> • Locality: {c.locality || "PARVATHIPURAM"}
+                      {c.discount_percent ? (
+                        <span className="ml-1 text-emerald-700 font-semibold">({c.discount_percent}% Disc)</span>
+                      ) : null}
+                    </div>
+                    <div className="text-right">
+                      <span className="text-slate-500 text-[10px] block">Khata / Credit</span>
+                      <strong className={c.credit_balance > 0 ? "text-rose-700" : "text-emerald-700"}>
+                        ₹{(c.credit_balance || 0).toFixed(2)}
+                      </strong>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
-              {hasScheduleH1 && (
-                <div className="mt-2 p-2.5 bg-rose-50 border border-rose-300 rounded-lg text-xs text-rose-900 flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="block font-semibold">Mandatory Schedule H1 Register Entry</strong>
-                    Patient identification details will be logged in the statutory register.
-                  </div>
+              {/* Cart Items List - PROMINENT, SCROLLABLE, ALWAYS VISIBLE */}
+              <div className="my-3 border-2 border-emerald-400/60 rounded-xl p-3 bg-emerald-50/20 shadow-sm min-h-[220px] max-h-[360px] overflow-y-auto space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700 pb-1.5 border-b border-emerald-200/80">
+                  <span className="flex items-center gap-1.5 text-emerald-950 font-black">
+                    <Pill className="w-4 h-4 text-emerald-600" /> Prescribed Medicines & Dispensing Units
+                  </span>
+                  <span className="text-[11px] text-emerald-700 font-semibold">
+                    Set Full Strips or Loose Tablets
+                  </span>
                 </div>
-              )}
 
-              {/* Cart Table */}
-              <div className="flex-1 overflow-y-auto my-3 divide-y divide-slate-100">
-                {cart.map((item, idx) => (
-                  <div key={idx} className="py-2.5 flex items-center justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-semibold text-sm text-slate-800 truncate">{item.medicine.brand_name}</span>
-                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1 py-0.5 rounded">
-                          Batch: {item.batch.batch_number}
+                {cart.map((item, idx) => {
+                  const conv = item.medicine.conversion && item.medicine.conversion > 0 ? item.medicine.conversion : 10;
+                  const strips = item.strips !== undefined ? item.strips : Math.floor(item.quantity);
+                  const tablets = item.tablets !== undefined ? item.tablets : Math.round((item.quantity - strips) * conv);
+                  const totalTabs = (strips * conv) + tablets;
+                  const perTabPrice = item.unit_price / conv;
+                  const isTabletForm = (item.medicine.product_type || "TABLETS") === "TABLETS" || (item.medicine.product_type || "") === "CAPSULES" || conv > 1;
+
+                  return (
+                    <div
+                      key={idx}
+                      className="p-3 bg-white rounded-xl border border-slate-200 shadow-sm hover:border-emerald-400 transition space-y-2.5"
+                    >
+                      {/* Top Row: Name, Code, Batch, Pack Size */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-extrabold text-sm text-slate-900 truncate">
+                              {item.medicine.brand_name}
+                            </span>
+                            {item.medicine.code && (
+                              <span className="text-[10px] bg-red-50 text-red-700 font-mono font-bold px-1.5 py-0.5 rounded border border-red-200">
+                                {item.medicine.code}
+                              </span>
+                            )}
+                            <span className="text-[10px] bg-slate-100 text-slate-700 font-mono font-semibold px-1.5 py-0.5 rounded border border-slate-200">
+                              Batch: {item.batch.batch_number}
+                            </span>
+                            <span className="text-[10px] bg-emerald-50 text-emerald-800 font-semibold px-1.5 py-0.5 rounded border border-emerald-200">
+                              Pack: {item.medicine.packing || `${conv}'S`} ({conv} tabs/strip)
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Exp: <span className="font-semibold text-slate-700">{item.batch.expiry_date}</span> • Rate: <strong className="text-emerald-700">₹{item.unit_price}</strong>/strip
+                            {isTabletForm && (
+                              <span className="text-blue-700 font-bold ml-1">
+                                (₹{perTabPrice.toFixed(2)}/tab)
+                              </span>
+                            )}
+                            {" "}• GST: {item.tax_rate}%
+                          </p>
+                        </div>
+
+                        {/* Remove item */}
+                        <button
+                          type="button"
+                          onClick={() => removeFromCart(idx)}
+                          className="text-slate-400 hover:text-rose-600 p-1 rounded hover:bg-rose-50 cursor-pointer transition shrink-0"
+                          title="Remove item"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Middle Row: Tablet & Strip Dispensing Controls */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                        {/* 1. Loose Tablets (Nos) Dispensing */}
+                        {isTabletForm ? (
+                          <div className="bg-blue-50/90 border-2 border-blue-300 p-2.5 rounded-lg shadow-xs">
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-[10px] uppercase font-black text-blue-900 tracking-wider flex items-center gap-1">
+                                <Pill className="w-3.5 h-3.5 text-blue-600" /> Loose Tablets (Nos)
+                              </span>
+                              <span className="text-[10px] font-bold text-blue-800">
+                                ₹{perTabPrice.toFixed(2)}/tab
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-1.5">
+                              <div className="flex items-center border-2 border-blue-400 rounded-lg bg-white shadow-xs">
+                                <button
+                                  type="button"
+                                  onClick={() => updateCartUnits(idx, strips, Math.max(0, tablets - 1))}
+                                  className="px-2.5 py-1 text-sm font-black text-blue-700 hover:bg-blue-100 rounded-l cursor-pointer"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={tablets}
+                                  onChange={(e) => updateCartUnits(idx, strips, Math.max(0, parseInt(e.target.value) || 0))}
+                                  className="w-12 text-center text-xs font-black text-blue-900 py-1 outline-none bg-transparent"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => updateCartUnits(idx, strips, tablets + 1)}
+                                  className="px-2.5 py-1 text-sm font-black text-blue-700 hover:bg-blue-100 rounded-r cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+
+                              {/* Quick Tablet Tap Buttons */}
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => updateCartUnits(idx, strips, 1)}
+                                  className={`px-1.5 py-0.5 text-[10px] rounded font-bold cursor-pointer transition border ${
+                                    tablets === 1
+                                      ? "bg-blue-600 text-white border-blue-700 shadow-xs"
+                                      : "bg-white border-blue-300 hover:bg-blue-100 text-blue-800"
+                                  }`}
+                                  title="Dispense 1 Tablet"
+                                >
+                                  1 Tab
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateCartUnits(idx, strips, 2)}
+                                  className={`px-1.5 py-0.5 text-[10px] rounded font-bold cursor-pointer transition border ${
+                                    tablets === 2
+                                      ? "bg-blue-600 text-white border-blue-700 shadow-xs"
+                                      : "bg-white border-blue-300 hover:bg-blue-100 text-blue-800"
+                                  }`}
+                                  title="Dispense 2 Tablets"
+                                >
+                                  2 Tab
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateCartUnits(idx, strips, 5)}
+                                  className={`px-2 py-0.5 text-[10px] rounded font-black cursor-pointer transition border ${
+                                    tablets === 5
+                                      ? "bg-blue-600 text-white border-blue-700 shadow-xs"
+                                      : "bg-white border-blue-400 hover:bg-blue-100 text-blue-900"
+                                  }`}
+                                  title="Dispense 5 Tablets (Half strip if 10)"
+                                >
+                                  5 Tab
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* 2. Full Strips Dispensing */}
+                        <div className={`p-2.5 rounded-lg border ${isTabletForm ? "bg-slate-50 border-slate-200" : "bg-emerald-50 border-emerald-300 col-span-2"}`}>
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-[10px] uppercase font-bold text-slate-700 tracking-wider">
+                              {isTabletForm ? "Full Strips" : "Units / Bottles / Packs"}
+                            </span>
+                            <span className="text-[10px] font-semibold text-slate-600">
+                              ₹{item.unit_price}/{item.medicine.unit || "unit"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="flex items-center border border-slate-300 rounded-lg bg-white shadow-xs">
+                              <button
+                                type="button"
+                                onClick={() => updateCartUnits(idx, Math.max(0, strips - 1), tablets)}
+                                className="px-2.5 py-1 text-sm font-bold text-slate-700 hover:bg-slate-100 rounded-l cursor-pointer"
+                              >
+                                -
+                              </button>
+                              <input
+                                type="number"
+                                min="0"
+                                value={strips}
+                                onChange={(e) => updateCartUnits(idx, Math.max(0, parseInt(e.target.value) || 0), tablets)}
+                                className="w-12 text-center text-xs font-black text-slate-900 py-1 outline-none bg-transparent"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updateCartUnits(idx, strips + 1, tablets)}
+                                className="px-2.5 py-1 text-sm font-bold text-slate-700 hover:bg-slate-100 rounded-r cursor-pointer"
+                              >
+                                +
+                              </button>
+                            </div>
+
+                            <div className="text-right">
+                              <div className="text-sm font-black text-slate-900">
+                                ₹{item.line_total.toFixed(2)}
+                              </div>
+                              {isTabletForm && (
+                                <span className="text-[10px] text-emerald-700 font-bold block whitespace-nowrap">
+                                  {totalTabs} Tabs total
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Real-time dispensing summary pill */}
+                      <div className="flex items-center justify-between text-[11px] text-slate-700 bg-slate-100/90 px-2.5 py-1 rounded-md border border-slate-200">
+                        <span>
+                          Dispensing:{" "}
+                          <strong className="text-emerald-700 font-bold">
+                            {strips > 0 ? `${strips} Full Strip${strips > 1 ? "s" : ""}` : ""}
+                          </strong>
+                          {strips > 0 && tablets > 0 ? " + " : ""}
+                          <strong className="text-blue-700 font-bold">
+                            {tablets > 0 ? `${tablets} Loose Tablet${tablets > 1 ? "s" : ""}` : ""}
+                          </strong>
+                          {strips === 0 && tablets === 0 ? "0 units" : ""}
+                          {isTabletForm && (
+                            <span className="text-slate-500 font-medium ml-1">
+                              ({totalTabs} Tablets total)
+                            </span>
+                          )}
+                        </span>
+                        <span>
+                          Line Total: <strong className="text-slate-900 font-black">₹{item.line_total.toFixed(2)}</strong>
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500">
-                        Exp: {item.batch.expiry_date} • ₹{item.unit_price} + {item.tax_rate}% GST
-                      </p>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center border border-slate-300 rounded-lg bg-slate-50">
-                        <button
-                          onClick={() => updateQuantity(idx, item.quantity - 1)}
-                          className="px-2 py-0.5 text-slate-600 hover:bg-slate-200 rounded-l cursor-pointer"
-                        >
-                          -
-                        </button>
-                        <span className="px-2 text-xs font-bold text-slate-800">{item.quantity}</span>
-                        <button
-                          onClick={() => updateQuantity(idx, item.quantity + 1)}
-                          className="px-2 py-0.5 text-slate-600 hover:bg-slate-200 rounded-r cursor-pointer"
-                        >
-                          +
-                        </button>
-                      </div>
-
-                      <span className="font-bold text-sm text-slate-900 w-16 text-right">
-                        ₹{item.line_total}
-                      </span>
-
-                      <button
-                        onClick={() => removeFromCart(idx)}
-                        className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {cart.length === 0 && (
-                  <div className="text-center py-16 text-slate-400">
-                    <ShoppingCart className="w-12 h-12 mx-auto mb-2 opacity-30" />
-                    <p className="text-sm">Counter is idle. Add medicines to begin billing.</p>
+                  <div className="text-center py-12 text-slate-400">
+                    <ShoppingCart className="w-10 h-10 mx-auto mb-2 opacity-30 text-emerald-600" />
+                    <p className="text-xs font-semibold text-slate-600">No medicines in current bill yet.</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Search or click any medicine on the left to add strips or tablets.</p>
                   </div>
                 )}
               </div>
 
-              {/* Regulatory Inputs */}
-              {hasScheduleH && (
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-3 space-y-2">
+              {/* Regulatory Warnings & Inputs (Clean and Compact) */}
+              {(hasScheduleH || hasScheduleH1) && (
+                <div className="bg-amber-50/70 p-2.5 rounded-xl border border-amber-300 mb-3 space-y-2 shrink-0 text-xs">
+                  <div className="flex items-center gap-1.5 text-amber-900 font-bold">
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Prescription & Statutory Compliance Check</span>
+                  </div>
+
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 uppercase">Prescribing Doctor</label>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase">Prescribing Doctor *</label>
                     <select
                       value={selectedDoctorId}
                       onChange={(e) => setSelectedDoctorId(e.target.value)}
-                      className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs outline-none"
+                      className="w-full mt-0.5 px-2 py-1 bg-white border border-slate-300 rounded text-xs outline-none"
                     >
                       {doctors.map((d) => (
                         <option key={d.id} value={d.id}>
@@ -903,23 +1279,23 @@ export default function App() {
                   </div>
 
                   {hasScheduleH1 && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div className="grid grid-cols-2 gap-2 pt-0.5">
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 uppercase">Patient Name *</label>
+                        <label className="block text-[10px] font-bold text-rose-800 uppercase">Patient Name *</label>
                         <input
                           type="text"
                           required
-                          placeholder="Full name"
+                          placeholder="Patient full name"
                           value={patientName}
                           onChange={(e) => setPatientName(e.target.value)}
-                          className="w-full mt-0.5 px-2 py-1 bg-white border border-slate-300 rounded text-xs outline-none"
+                          className="w-full mt-0.5 px-2 py-1 bg-white border border-rose-300 rounded text-xs outline-none"
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-600 uppercase">Phone / Contact</label>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase">Phone / Contact</label>
                         <input
                           type="text"
-                          placeholder="Mobile #"
+                          placeholder="Patient mobile #"
                           value={patientPhone}
                           onChange={(e) => setPatientPhone(e.target.value)}
                           className="w-full mt-0.5 px-2 py-1 bg-white border border-slate-300 rounded text-xs outline-none"
@@ -931,7 +1307,7 @@ export default function App() {
               )}
 
               {/* Billing Summary Box */}
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2 text-xs">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2 text-xs shrink-0">
                 <div className="flex justify-between text-slate-600">
                   <span>Subtotal</span>
                   <span className="font-semibold text-slate-800">₹{subtotal.toFixed(2)}</span>
@@ -957,7 +1333,7 @@ export default function App() {
               </div>
 
               {/* Payment Mode Selector */}
-              <div className="grid grid-cols-4 gap-2 my-3">
+              <div className="grid grid-cols-4 gap-2 my-2.5 shrink-0">
                 {(["CASH", "CARD", "UPI", "CREDIT"] as const).map((mode) => (
                   <button
                     key={mode}
@@ -978,7 +1354,7 @@ export default function App() {
               <button
                 onClick={handleCheckout}
                 disabled={cart.length === 0}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2 cursor-pointer shrink-0"
               >
                 <CheckCircle className="w-5 h-5" /> Complete Sale & Print Invoice
               </button>
@@ -1231,64 +1607,33 @@ export default function App() {
         )}
 
         {/* =================================================================== */}
-        {/* TAB 4: MEDICINES MASTER CATALOG                                     */}
+        {/* TAB 4: MASTER DATABASE (GENSOFT ERP PHARMACY CATALOG)               */}
         {/* =================================================================== */}
-        {activeTab === "medicines" && (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">Medicines Master Catalog</h2>
-                <p className="text-xs text-slate-500">Master database of all formulations, drug schedules, salts, and tax slabs.</p>
-              </div>
-              <button
-                onClick={() => setShowAddMedModal(true)}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
-              >
-                <Plus className="w-4 h-4" /> Add New Medicine
-              </button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500 bg-slate-50">
-                    <th className="py-2.5 px-3 font-semibold">Brand Name</th>
-                    <th className="py-2.5 px-3 font-semibold">Generic / Salt Composition</th>
-                    <th className="py-2.5 px-3 font-semibold">Schedule Classification</th>
-                    <th className="py-2.5 px-3 font-semibold">Unit / Pack</th>
-                    <th className="py-2.5 px-3 font-semibold">MRP</th>
-                    <th className="py-2.5 px-3 font-semibold">Selling Rate</th>
-                    <th className="py-2.5 px-3 font-semibold">GST Rate</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {medicines.map((m) => (
-                    <tr key={m.id} className="hover:bg-slate-50/50">
-                      <td className="py-2.5 px-3 font-bold text-slate-800">{m.brand_name}</td>
-                      <td className="py-2.5 px-3 text-slate-600">{m.composition || m.generic_name}</td>
-                      <td className="py-2.5 px-3">
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                            m.schedule_type === "SCHEDULE_H1" || m.schedule_type === "SCHEDULE_X"
-                              ? "bg-rose-100 text-rose-800"
-                              : m.schedule_type === "SCHEDULE_H"
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-emerald-100 text-emerald-800"
-                          }`}
-                        >
-                          {m.schedule_type}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600">{m.pack_size || m.unit}</td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-800">₹{m.mrp}</td>
-                      <td className="py-2.5 px-3 font-bold text-emerald-700">₹{m.selling_price}</td>
-                      <td className="py-2.5 px-3 text-slate-600">{m.gst_rate}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        {activeTab === "master" && (
+          <MasterDatabaseView
+            medicines={medicines}
+            customers={customers}
+            onOpenNewProduct={() => {
+              setEditingMedicine(null);
+              setShowProductMasterModal(true);
+            }}
+            onEditProduct={(med) => {
+              setEditingMedicine(med);
+              setShowProductMasterModal(true);
+            }}
+            onDeleteProduct={handleDeleteMedicine}
+            onOpenNewCustomer={() => {
+              setEditingCustomer(null);
+              setShowCustomerMasterModal(true);
+            }}
+            onEditCustomer={(cust) => {
+              setEditingCustomer(cust);
+              setShowCustomerMasterModal(true);
+            }}
+            onDeleteCustomer={handleDeleteCustomer}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onAddStock={openAddStockForMed}
+          />
         )}
 
         {/* =================================================================== */}
@@ -1658,14 +2003,25 @@ export default function App() {
                 <span>Description</span>
                 <span>Amount</span>
               </div>
-              {completedBill.items?.map((it: any, idx: number) => (
-                <div key={idx} className="flex justify-between text-slate-700">
-                  <span>
-                    {it.quantity}x Medicine (₹{it.unit_price})
-                  </span>
-                  <span>₹{it.line_total}</span>
-                </div>
-              ))}
+              {completedBill.items?.map((it: any, idx: number) => {
+                const med = medicines.find((m) => m.id === it.medicine_id);
+                const conv = med?.conversion && med.conversion > 0 ? med.conversion : 10;
+                const totalTabs = Math.round(it.quantity * conv);
+                const strips = Math.floor(it.quantity);
+                const tabs = totalTabs % conv;
+
+                return (
+                  <div key={idx} className="flex justify-between text-slate-700 py-1 border-b border-slate-100 last:border-none">
+                    <div className="flex-1 pr-2">
+                      <div className="font-semibold text-slate-900">{med?.brand_name || "Medicine"}</div>
+                      <div className="text-[11px] text-slate-500">
+                        Qty: {strips > 0 ? `${strips} Strip${strips > 1 ? "s" : ""}` : ""}{tabs > 0 ? `${strips > 0 ? " + " : ""}${tabs} Tab${tabs > 1 ? "s" : ""}` : ""} ({totalTabs} tabs) • Rate: ₹{it.unit_price} (₹{(it.unit_price / conv).toFixed(2)}/tab)
+                      </div>
+                    </div>
+                    <span className="font-bold text-slate-900 self-center">₹{it.line_total.toFixed(2)}</span>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="space-y-1 text-xs pt-1">
@@ -2180,6 +2536,30 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* GenSoft Product Master Modal */}
+      <ProductMasterModal
+        isOpen={showProductMasterModal}
+        onClose={() => {
+          setShowProductMasterModal(false);
+          setEditingMedicine(null);
+        }}
+        onSaved={handleProductSaved}
+        initialMedicine={editingMedicine}
+        manufacturers={manufacturers}
+      />
+
+      {/* GenSoft Customer Master Modal */}
+      <CustomerMasterModal
+        isOpen={showCustomerMasterModal}
+        onClose={() => {
+          setShowCustomerMasterModal(false);
+          setEditingCustomer(null);
+        }}
+        onSaved={handleCustomerSaved}
+        initialCustomer={editingCustomer}
+        doctors={doctors}
+      />
     </div>
   );
 }

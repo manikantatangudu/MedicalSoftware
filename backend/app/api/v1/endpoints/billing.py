@@ -145,7 +145,7 @@ def create_bill(
         # Deduct stock and attach line items
         for p in processed_items:
             # Atomic stock deduction
-            p["batch"].quantity_remaining -= p["quantity"]
+            p["batch"].quantity_remaining = round(p["batch"].quantity_remaining - p["quantity"], 4)
 
             bill_item = BillItem(
                 bill_id=bill.id,

@@ -13,3 +13,6 @@ frontend/.vite/
 # Environment variables
 .env
 *.local
+
+# Tunnel binary
+cloudflared.exe

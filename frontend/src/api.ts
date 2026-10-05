@@ -60,6 +60,28 @@ export const api = {
     return res.json();
   },
 
+  async updateMedicine(id: string, data: any) {
+    const res = await fetch(`${API_BASE}/medicines/${id}`, {
+      method: "PUT",
+      headers: getAuthHeader(),
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to update medicine" }));
+      throw new Error(err.detail || "Failed to update medicine");
+    }
+    return res.json();
+  },
+
+  async deleteMedicine(id: string) {
+    const res = await fetch(`${API_BASE}/medicines/${id}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    if (!res.ok) throw new Error("Failed to delete medicine");
+    return res.json();
+  },
+
   // Inventory
   async getBatches() {
     const res = await fetch(`${API_BASE}/inventory/batches`, { headers: getAuthHeader() });
@@ -99,9 +121,55 @@ export const api = {
     return res.json();
   },
 
-  async getCustomers() {
-    const res = await fetch(`${API_BASE}/master/customers`, { headers: getAuthHeader() });
+  async createDoctor(data: any) {
+    const res = await fetch(`${API_BASE}/master/doctors`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error("Failed to add doctor");
+    return res.json();
+  },
+
+  async getCustomers(query = "") {
+    const url = query ? `${API_BASE}/master/customers?q=${encodeURIComponent(query)}` : `${API_BASE}/master/customers`;
+    const res = await fetch(url, { headers: getAuthHeader() });
     if (!res.ok) return [];
+    return res.json();
+  },
+
+  async createCustomer(data: any) {
+    const res = await fetch(`${API_BASE}/master/customers`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to save customer" }));
+      throw new Error(err.detail || "Failed to save customer");
+    }
+    return res.json();
+  },
+
+  async updateCustomer(id: string, data: any) {
+    const res = await fetch(`${API_BASE}/master/customers/${id}`, {
+      method: "PUT",
+      headers: getAuthHeader(),
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Failed to update customer" }));
+      throw new Error(err.detail || "Failed to update customer");
+    }
+    return res.json();
+  },
+
+  async deleteCustomer(id: string) {
+    const res = await fetch(`${API_BASE}/master/customers/${id}`, {
+      method: "DELETE",
+      headers: getAuthHeader()
+    });
+    if (!res.ok) throw new Error("Failed to delete customer");
     return res.json();
   },
 
@@ -118,6 +186,29 @@ export const api = {
       body: JSON.stringify(data)
     });
     if (!res.ok) throw new Error("Failed to add supplier");
+    return res.json();
+  },
+
+  async getManufacturers() {
+    const res = await fetch(`${API_BASE}/master/manufacturers`, { headers: getAuthHeader() });
+    if (!res.ok) return [];
+    return res.json();
+  },
+
+  async createManufacturer(data: any) {
+    const res = await fetch(`${API_BASE}/master/manufacturers`, {
+      method: "POST",
+      headers: getAuthHeader(),
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error("Failed to add company");
+    return res.json();
+  },
+
+  async getMolecules(query = "") {
+    const url = query ? `${API_BASE}/master/molecules?q=${encodeURIComponent(query)}` : `${API_BASE}/master/molecules`;
+    const res = await fetch(url, { headers: getAuthHeader() });
+    if (!res.ok) return [];
     return res.json();
   },
 

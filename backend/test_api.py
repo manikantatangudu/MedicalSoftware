@@ -37,7 +37,9 @@ def test_system():
     print(f"[PASS] Supplier loaded: {supplier['name']} | Initial Balance: Rs.{initial_balance}")
 
     # 5. Create Purchase Order (PO)
-    aug_med = next(m for m in meds if "Augmentin" in m["brand_name"])
+    aug_res = client.get("/api/v1/medicines/?q=Augmentin", headers=headers)
+    assert aug_res.status_code == 200 and len(aug_res.json()) > 0
+    aug_med = aug_res.json()[0]
     po_payload = {
         "supplier_id": supplier["id"],
         "items": [
